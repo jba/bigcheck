@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"go/ast"
 	"go/token"
 	"go/types"
@@ -18,7 +19,7 @@ var size = flag.Int("size", 0, "smallest size that will trigger a message")
 func main() {
 	flag.Parse()
 	if *size == 0 {
-		log.Fatal("need -threshold")
+		log.Fatal("need -size")
 	}
 	singlechecker.Main(analyzer)
 }
@@ -36,9 +37,26 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 	smallestBadSize := int64(*size)
 
-	isLargeType := func(t types.Type) bool { return stdSizes.Sizeof(t) >= smallestBadSize }
+	largetypef := func(t types.Type, pos token.Pos, format string, args ...interface{}) {
 
-	isLarge := func(e ast.Expr) bool { return isLargeType(pass.TypesInfo.Types[e].Type) }
+		if t == nil {
+			// No type information.
+			// Could be the variable assigned to in a type switch, for example.
+			return
+		}
+		// Untyped types are never large.
+		if bt, ok := t.Underlying().(*types.Basic); ok && bt.Info()&types.IsUntyped != 0 {
+			return
+		}
+		sz := stdSizes.Sizeof(t)
+		if sz >= smallestBadSize {
+			pass.Reportf(pos, "%s is %d bytes", fmt.Sprintf(format, args...), sz)
+		}
+	}
+
+	largef := func(e ast.Expr, pos token.Pos, format string, args ...interface{}) {
+		largetypef(pass.TypesInfo.Types[e].Type, pos, format, args...)
+	}
 
 	nodeFilter := []ast.Node{
 		(*ast.AssignStmt)(nil),
@@ -52,49 +70,38 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		switch e := n.(type) {
 		case *ast.CallExpr:
 			for i, a := range e.Args {
-				if isLarge(a) {
-					pass.Reportf(e.Pos(), "arg #%d is large", i)
-				}
+				largef(a, e.Pos(), "arg #%d", i)
 			}
 		case *ast.AssignStmt:
-			//ast.Print(pass.Fset, e)
 			for i, r := range e.Rhs {
-				if isLarge(r) {
-					if len(e.Rhs) == 1 {
-						pass.Reportf(e.Pos(), "rhs is large")
-					} else {
-						pass.Reportf(e.Pos(), "rhs #%d is large", i)
-					}
-				}
+				largef(r, e.Pos(), "rhs #%d", i)
 			}
 		case *ast.SendStmt:
-			if isLarge(e.Value) {
-				pass.Reportf(e.Pos(), "value being sent is large")
-			}
+			largef(e.Value, e.Pos(), "value being sent")
+
 		case *ast.UnaryExpr:
-			if e.Op == token.ARROW && isLarge(e) {
-				pass.Reportf(e.Pos(), "received value is large")
+			if e.Op == token.ARROW {
+				largef(e, e.Pos(), "received value")
 			}
+
 		case *ast.ReturnStmt:
 			for i, r := range e.Results {
-				if isLarge(r) {
-					pass.Reportf(e.Pos(), "return value #%d is large", i)
-				}
+				largef(r, e.Pos(), "return value #%d", i)
 			}
 
 		case *ast.RangeStmt:
 			xt := pass.TypesInfo.Types[e.X].Type
 			if e.Key != nil {
-				if mt, ok := xt.(*types.Map); ok && isLargeType(mt.Key()) {
-					pass.Reportf(e.Pos(), "ranged key is large")
+				if mt, ok := xt.(*types.Map); ok {
+					largetypef(mt.Key(), e.Pos(), "ranged key")
 				}
-				if ct, ok := xt.(*types.Chan); ok && isLargeType(ct.Elem()) {
-					pass.Reportf(e.Pos(), "ranged value is large")
+				if ct, ok := xt.(*types.Chan); ok {
+					largetypef(ct.Elem(), e.Pos(), "ranged value")
 				}
 			}
 			if e.Value != nil {
-				if xt, ok := xt.(interface{ Elem() types.Type }); ok && isLargeType(xt.Elem()) {
-					pass.Reportf(e.Pos(), "ranged value is large")
+				if xt, ok := xt.(interface{ Elem() types.Type }); ok {
+					largetypef(xt.Elem(), e.Pos(), "ranged value")
 				}
 			}
 
