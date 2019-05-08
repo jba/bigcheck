@@ -74,7 +74,9 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			}
 		case *ast.AssignStmt:
 			for i, r := range e.Rhs {
-				largef(r, e.Pos(), "rhs #%d", i)
+				if !isBlank(e.Lhs[i]) {
+					largef(r, e.Pos(), "rhs #%d", i)
+				}
 			}
 		case *ast.SendStmt:
 			largef(e.Value, e.Pos(), "value being sent")
@@ -91,7 +93,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 
 		case *ast.RangeStmt:
 			xt := pass.TypesInfo.Types[e.X].Type
-			if e.Key != nil {
+			if e.Key != nil && !isBlank(e.Key) {
 				if mt, ok := xt.(*types.Map); ok {
 					largetypef(mt.Key(), e.Pos(), "ranged key")
 				}
@@ -99,7 +101,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 					largetypef(ct.Elem(), e.Pos(), "ranged value")
 				}
 			}
-			if e.Value != nil {
+			if e.Value != nil && !isBlank(e.Value) {
 				if xt, ok := xt.(interface{ Elem() types.Type }); ok {
 					largetypef(xt.Elem(), e.Pos(), "ranged value")
 				}
@@ -110,4 +112,10 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		}
 	})
 	return nil, nil
+}
+
+// isBlank reports whether e is the blank identifier
+func isBlank(e ast.Expr) bool {
+	id, ok := e.(*ast.Ident)
+	return ok && id.Name == "_"
 }
